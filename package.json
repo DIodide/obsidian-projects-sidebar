@@ -1,0 +1,36 @@
+{
+  "name": "obsidian-projects-sidebar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node esbuild.config.mjs",
+    "test": "tsx --test tests/*.test.ts",
+    "screenshots": "node scripts/screenshots.mjs",
+    "package": "npm run build && node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
+    "lucide": "^1.72.0",
+    "obsidian": "^1.8.7",
+    "playwright": "^1.65.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  },
+  "description": "A focused, filterable project sidebar for Obsidian, with nested project boundaries.",
+  "license": "MIT",
+  "author": "Ibraheem Amin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DIodide/obsidian-projects-sidebar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DIodide/obsidian-projects-sidebar/issues"
+  },
+  "homepage": "https://github.com/DIodide/obsidian-projects-sidebar#readme",
+  "engines": {
+    "node": ">=22"
+  }
+}

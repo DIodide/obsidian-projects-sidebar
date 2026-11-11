@@ -1,0 +1,11 @@
+node_modules/
+.test-build/
+.demo-build/
+install-backups/
+releases/
+main.js
+data.json
+.DS_Store
+*.log
+.env
+.env.*
