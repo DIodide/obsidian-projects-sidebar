@@ -1,8 +1,13 @@
 import {
-  Plugin, ItemView, WorkspaceLeaf, TFolder, TFile,
+  Plugin, ItemView, WorkspaceLeaf, TAbstractFile, TFolder, TFile,
   FuzzySuggestModal, Modal, Setting, Menu, Notice, PluginSettingTab, setIcon,
 } from 'obsidian';
 import { ALL, Settings, Project, TreeRow, readSettings, filterProjects, treeRows, ownerOf, applyRename } from './model';
+
+import { FileOperations } from './file-operations';
+
+const DRAG_TYPE = 'application/x-obsidian-projects-sidebar';
+const CLIPBOARD_TYPE = 'application/x-obsidian-projects-sidebar-copy';
 
 export const VIEW = 'projects-sidebar-view';
 const ROW_HEIGHT = 30;
@@ -17,11 +22,13 @@ function iconButton(parent: HTMLElement, icon: string, label: string, action: (e
 
 export default class ProjectsPlugin extends Plugin {
   settings: Settings = readSettings(null);
+  operations!: FileOperations;
   private saveTimer?: number;
   private saves: Promise<void> = Promise.resolve();
   private refreshTimer?: number;
 
   async onload() {
+    this.operations = new FileOperations(this.app);
     this.settings = readSettings(await this.loadData());
     this.registerView(VIEW, leaf => new ProjectsView(leaf, this));
     this.addRibbonIcon('panels-top-left', 'Projects', () => { void this.openView(); });
@@ -126,6 +133,7 @@ export class ProjectsView extends ItemView {
   private expanded = new Set<string>();
   private resize?: ResizeObserver;
   private frame?: number;
+  private dropHighlight?: HTMLElement;
 
   constructor(leaf: WorkspaceLeaf, public plugin: ProjectsPlugin) { super(leaf); }
   getViewType() { return VIEW; }
@@ -137,6 +145,11 @@ export class ProjectsView extends ItemView {
   async onOpen() {
     const root = this.contentEl;
     root.empty(); root.addClass('ps-view');
+    this.registerDomEvent(root, 'dragover', event => this.dragOver(event));
+    this.registerDomEvent(root, 'drop', event => this.drop(event));
+    this.registerDomEvent(root, 'dragleave', event => {
+      if (!event.relatedTarget || !root.contains(event.relatedTarget as Node)) this.clearDropHighlight();
+    });
     const header = root.createDiv({ cls: 'ps-heading' });
     header.createEl('h2', { text: 'Projects' });
     iconButton(header, 'plus', 'Add project', () => this.plugin.pickFolder());
@@ -162,14 +175,45 @@ export class ProjectsView extends ItemView {
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1)));
       buttons[next]?.focus();
     });
-    this.treeHeader = root.createDiv({ cls: 'ps-tree-heading' });
+    this.treeHeader = root.createDiv({ cls: 'ps-tree-heading', attr: { tabindex: '0', 'aria-label': 'Project root folder' } });
     this.viewport = root.createDiv({ cls: 'ps-tree', attr: { role: 'tree', tabindex: '0', 'aria-label': 'Project files' } });
     this.canvas = this.viewport.createDiv({ cls: 'ps-tree-canvas', attr: { role: 'presentation' } });
+    this.registerDomEvent(this.viewport, 'click', event => {
+      if (!(event.target as HTMLElement).closest('.ps-tree-row')) {
+        this.cursor = -1; this.viewport.focus(); this.renderTreeWindow();
+      }
+    });
     this.registerDomEvent(this.viewport, 'scroll', () => {
       if (this.frame !== undefined) return;
       this.frame = this.viewport.win.requestAnimationFrame(() => { this.frame = undefined; this.renderTreeWindow(); });
     });
     this.registerDomEvent(this.viewport, 'keydown', event => this.treeKeydown(event));
+    this.registerDomEvent(root.ownerDocument, 'copy', event => {
+      if (!this.viewport.contains(root.ownerDocument.activeElement)) return;
+      const row = this.rows[this.cursor];
+      const file = row && this.app.vault.getAbstractFileByPath(row.node.path);
+      if (!file || !event.clipboardData) return;
+      event.preventDefault(); event.stopPropagation();
+      this.copy(file);
+      event.clipboardData.setData(CLIPBOARD_TYPE, this.plugin.operations.clipboardToken);
+      event.clipboardData.setData('text/plain', file.path);
+    }, { capture: true });
+    this.registerDomEvent(root, 'paste', event => {
+      const target = event.target as HTMLElement;
+      if (target.closest('input, textarea, [contenteditable=true]')) return;
+      if (event.clipboardData?.getData(CLIPBOARD_TYPE) !== this.plugin.operations.clipboardToken) return;
+      if (!target.closest('[data-project-path]') && !this.treeHeader.contains(target) && !this.viewport.contains(target)) return;
+      event.preventDefault(); event.stopPropagation(); this.paste(this.pasteDestination(target));
+    });
+    this.registerDomEvent(root, 'keydown', event => {
+      const target = event.target as HTMLElement;
+      if (this.viewport.contains(target) || target.closest('input, textarea, [contenteditable=true]')) return;
+      if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'v' && this.viewport.win.navigator.platform.toLowerCase().includes('mac')) {
+        if (!target.closest('[data-project-path]') && !this.treeHeader.contains(target)) return;
+        event.preventDefault(); event.stopPropagation();
+        if (!event.repeat) void this.pasteFromClipboard(this.pasteDestination(target));
+      }
+    });
     this.resize = new ResizeObserver(() => this.renderTreeWindow());
     this.resize.observe(this.viewport);
     this.projectChanged();
@@ -201,7 +245,7 @@ export class ProjectsView extends ItemView {
   }
   private projectRow(project: Project | null) {
     const selected = (project?.id ?? null) === this.plugin.settings.selectedId;
-    const row = this.projectList.createDiv({ cls: `ps-project${selected ? ' is-selected' : ''}` });
+    const row = this.projectList.createDiv({ cls: `ps-project${selected ? ' is-selected' : ''}`, attr: { 'data-project-path': project?.path ?? '' } });
     const button = row.createEl('button', { cls: 'ps-project-select', attr: { type: 'button', 'aria-pressed': String(selected), title: project?.path ?? 'Every file in the vault' } });
     setIcon(button.createSpan({ cls: 'ps-project-icon' }), project ? 'folder-kanban' : 'vault');
     const label = button.createSpan({ cls: 'ps-project-label' });
@@ -270,7 +314,7 @@ export class ProjectsView extends ItemView {
       const row = this.rows[index];
       const folder = !!row.node.children;
       const el = this.canvas.createDiv({ cls: `ps-tree-row${active === row.node.path ? ' is-active' : ''}${index === this.cursor ? ' is-cursor' : ''}${row.project ? ' is-boundary' : ''}`, attr: {
-        role: 'treeitem', id: `ps-${this.treeId}-${index}`, 'aria-level': String(row.depth + 1), 'aria-selected': String(active === row.node.path),
+        role: 'treeitem', id: `ps-${this.treeId}-${index}`, 'aria-level': String(row.depth + 1), 'aria-selected': String(index === this.cursor), 'data-path': row.node.path, draggable: 'true',
         title: row.project ? `Open project: ${row.project.name}` : row.node.path,
       } });
       el.style.top = `${index * ROW_HEIGHT}px`;
@@ -282,7 +326,22 @@ export class ProjectsView extends ItemView {
       el.createSpan({ cls: 'ps-file-name', text: row.project?.name ?? row.node.name });
       if (row.project) { el.createSpan({ cls: 'ps-project-badge', text: 'Project' }); setIcon(el.createSpan({ cls: 'ps-boundary-arrow' }), 'arrow-up-right'); }
       el.addEventListener('click', event => { this.cursor = index; this.viewport.focus(); this.activateRow(row, event.metaKey || event.ctrlKey); });
-      el.addEventListener('contextmenu', event => { event.preventDefault(); this.fileMenu(row, event); });
+      el.addEventListener('dragstart', event => {
+        const file = this.app.vault.getAbstractFileByPath(row.node.path);
+        if (!file || !event.dataTransfer || this.plugin.operations.busy) { event.preventDefault(); return; }
+        this.cursor = index;
+        this.plugin.operations.dragging = file;
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData(DRAG_TYPE, this.plugin.operations.dragToken);
+        event.dataTransfer.setData('text/plain', file.path);
+      });
+      el.addEventListener('dragend', () => {
+        this.plugin.operations.dragging = null;
+        this.plugin.views().forEach(view => view.clearDropHighlight());
+      });
+      el.addEventListener('contextmenu', event => {
+        event.preventDefault(); this.cursor = index; this.viewport.focus(); this.renderTreeWindow(); this.fileMenu(row, event);
+      });
     }
     if (this.cursor >= first && this.cursor < last) this.viewport.setAttribute('aria-activedescendant', `ps-${this.treeId}-${this.cursor}`);
     else this.viewport.removeAttribute('aria-activedescendant');
@@ -294,13 +353,48 @@ export class ProjectsView extends ItemView {
       if (this.expanded.has(file.path)) this.expanded.delete(file.path); else this.expanded.add(file.path);
       this.saveExpansion(); this.rebuildTree();
     } else if (file instanceof TFile) {
-      void this.app.workspace.getLeaf(newTab ? 'tab' : false).openFile(file).catch(error => { console.error(error); new Notice(`Could not open ${file.name}.`); });
+      void this.app.workspace.getLeaf(newTab ? 'tab' : false).openFile(file).then(() => { this.viewport.focus(); }).catch(error => { console.error(error); new Notice(`Could not open ${file.name}.`); });
     }
   }
   private saveExpansion() { this.plugin.settings.expanded[this.stateKey] = [...this.expanded]; this.plugin.persist(); }
   private treeKeydown(event: KeyboardEvent) {
     const row = this.rows[this.cursor];
-    if (!row) return;
+    const modified = (event.ctrlKey || event.metaKey) && !event.altKey;
+    const key = event.key.toLowerCase();
+    if (modified && ['c', 'v'].includes(key)) {
+      // Let the browser deliver real clipboard events, so copying elsewhere replaces our copy.
+      event.stopPropagation();
+      if (event.repeat) { event.preventDefault(); return; }
+      // macOS uses Cmd for native clipboard shortcuts; also honor literal Ctrl as requested.
+      if (event.ctrlKey && this.viewport.win.navigator.platform.toLowerCase().includes('mac')) {
+        event.preventDefault();
+        if (key === 'c') this.viewport.ownerDocument.execCommand('copy');
+        else if (!this.viewport.ownerDocument.execCommand('paste')) {
+          const file = row && this.app.vault.getAbstractFileByPath(row.node.path);
+          void this.pasteFromClipboard(file instanceof TFolder ? file : file?.parent ?? this.rootFolder());
+        }
+      }
+      return;
+    }
+    if (modified && key === 'd') {
+      event.preventDefault(); event.stopPropagation();
+      const file = row && this.app.vault.getAbstractFileByPath(row.node.path);
+      if (file && !event.repeat) this.deleteFile(file);
+      return;
+    }
+    if (event.key === 'Delete' && !event.altKey && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault(); event.stopPropagation();
+      const file = row && this.app.vault.getAbstractFileByPath(row.node.path);
+      if (file && !event.repeat) this.deleteFile(file);
+      return;
+    }
+    if (!row) {
+      if (this.rows.length && ['ArrowDown', 'Home', 'ArrowUp', 'End'].includes(event.key)) {
+        event.preventDefault(); this.cursor = ['ArrowUp', 'End'].includes(event.key) ? this.rows.length - 1 : 0;
+        this.ensureCursorVisible(); this.renderTreeWindow();
+      }
+      return;
+    }
     if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End', 'Enter', ' '].includes(event.key)) return;
     event.preventDefault();
     switch (event.key) {
@@ -330,6 +424,115 @@ export class ProjectsView extends ItemView {
     if (index < 0) return;
     this.cursor = index; this.ensureCursorVisible(); this.renderTreeWindow(); this.viewport.focus();
   }
+  private pasteDestination(target: HTMLElement): TFolder | null {
+    const project = target.closest<HTMLElement>('[data-project-path]');
+    if (project) {
+      const file = project.dataset.projectPath ? this.app.vault.getAbstractFileByPath(project.dataset.projectPath) : this.app.vault.getRoot();
+      return file instanceof TFolder ? file : null;
+    }
+    if (this.treeHeader.contains(target)) return this.rootFolder();
+    const row = this.rows[this.cursor];
+    const file = row && this.app.vault.getAbstractFileByPath(row.node.path);
+    return file instanceof TFolder ? file : file?.parent ?? this.rootFolder();
+  }
+  private rootFolder(): TFolder | null {
+    const root = this.selected ? this.app.vault.getAbstractFileByPath(this.selected.path) : this.app.vault.getRoot();
+    return root instanceof TFolder ? root : null;
+  }
+  private copy(file: TAbstractFile) {
+    try { this.plugin.operations.copy(file); new Notice(`Copied ${file.name}. Select a destination and paste.`); }
+    catch (error) { new Notice(error instanceof Error ? error.message : String(error)); }
+  }
+  private runOperation(action: () => Promise<void>) {
+    const operations = this.plugin.operations;
+    if (operations.busy) { new Notice('Wait for the current file operation to finish.'); return; }
+    operations.busy = true;
+    void action().catch(error => {
+      console.error('Projects Sidebar: file operation failed', error);
+      new Notice(error instanceof Error ? error.message : String(error));
+    }).finally(() => { operations.busy = false; this.plugin.refresh(); });
+  }
+  private paste(destination: TFolder | null) {
+    const source = this.plugin.operations.copied;
+    if (!source) { new Notice('Copy a note or folder in Projects first.'); return; }
+    // Copy/paste without changing selection duplicates a folder beside itself.
+    if (destination === source) destination = source.parent;
+    if (!destination) return;
+    const target = destination;
+    this.runOperation(async () => {
+      const result = await this.plugin.operations.transfer(source, target, true);
+      this.showTransferred(result, target);
+    });
+  }
+  private async pasteFromClipboard(destination: TFolder | null) {
+    const operations = this.plugin.operations;
+    const source = operations.copied;
+    try {
+      const text = await this.viewport.win.navigator.clipboard.readText();
+      if (!source || source !== operations.copied || text !== operations.clipboardText) {
+        new Notice('Copy a note or folder in Projects first.'); return;
+      }
+      this.paste(destination);
+    } catch {
+      new Notice('Clipboard access was unavailable. Focus the tree and use your system paste shortcut.');
+    }
+  }
+  private deleteFile(file: TAbstractFile) {
+    this.runOperation(async () => { await this.plugin.operations.delete(file); });
+  }
+  private showTransferred(file: TAbstractFile, destination: TFolder) {
+    // Do not switch projects behind the user after an asynchronous operation.
+    const root = this.rootFolder();
+    if (root && (destination === root || this.rows.some(row => row.node.path === destination.path && !row.project))) {
+      this.expanded = new Set(this.plugin.settings.expanded[this.stateKey] ?? []);
+      this.expanded.add(destination.path); this.saveExpansion();
+    }
+    this.plugin.refresh(); this.focusPath(file.path);
+  }
+  private dropTarget(event: DragEvent): { element: HTMLElement; folder: TFolder } | null {
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>('.ps-tree-row');
+    const project = target.closest<HTMLElement>('[data-project-path]');
+    let element: HTMLElement;
+    let file: TAbstractFile | null;
+    if (row) { element = row; file = this.app.vault.getAbstractFileByPath(row.dataset.path!); }
+    else if (project) { element = project; file = project.dataset.projectPath ? this.app.vault.getAbstractFileByPath(project.dataset.projectPath) : this.app.vault.getRoot(); }
+    else if (this.viewport.contains(target) || this.treeHeader.contains(target)) { element = this.viewport; file = this.rootFolder(); }
+    else return null;
+    return file instanceof TFolder ? { element, folder: file } : null;
+  }
+  private clearDropHighlight() {
+    this.dropHighlight?.classList.remove('ps-drop-target'); this.dropHighlight = undefined;
+  }
+  private dragOver(event: DragEvent) {
+    this.clearDropHighlight();
+    if (!this.plugin.operations.dragging || !event.dataTransfer?.types.includes(DRAG_TYPE)) return;
+    // Consume sidebar drags even over invalid rows; never let them fall through to the editor.
+    event.preventDefault(); event.stopPropagation();
+    const target = this.dropTarget(event);
+    event.dataTransfer.dropEffect = target ? 'move' : 'none';
+    if (target) { this.dropHighlight = target.element; target.element.classList.add('ps-drop-target'); }
+    if (this.viewport.contains(event.target as Node)) {
+      const bounds = this.viewport.getBoundingClientRect();
+      if (event.clientY < bounds.top + 28) this.viewport.scrollTop -= 18;
+      else if (event.clientY > bounds.bottom - 28) this.viewport.scrollTop += 18;
+    }
+  }
+  private drop(event: DragEvent) {
+    this.clearDropHighlight();
+    const operations = this.plugin.operations;
+    if (!event.dataTransfer?.types.includes(DRAG_TYPE)) return;
+    event.preventDefault(); event.stopPropagation();
+    if (event.dataTransfer.getData(DRAG_TYPE) !== operations.dragToken) return;
+    const source = operations.dragging;
+    operations.dragging = null;
+    const target = this.dropTarget(event);
+    if (!source || !target) return;
+    this.runOperation(async () => {
+      const result = await operations.transfer(source, target.folder, false);
+      this.showTransferred(result, target.folder);
+    });
+  }
   private fileMenu(row: TreeRow, event: MouseEvent) {
     const file = this.app.vault.getAbstractFileByPath(row.node.path);
     if (!file) return;
@@ -339,6 +542,13 @@ export class ProjectsView extends ItemView {
       menu.addItem(item => item.setTitle('New note').setIcon('file-plus').onClick(() => this.createEntry(file, false)));
       menu.addItem(item => item.setTitle('New folder').setIcon('folder-plus').onClick(() => this.createEntry(file, true)));
     } else menu.addItem(item => item.setTitle('Open in new tab').setIcon('file').onClick(() => this.activateRow(row, true)));
+    menu.addSeparator();
+    menu.addItem(item => item.setTitle('Copy').setIcon('copy').onClick(() => {
+      this.focusPath(file.path);
+      if (!this.viewport.ownerDocument.execCommand('copy')) this.copy(file);
+    }));
+    menu.addItem(item => item.setTitle('Paste').setIcon('clipboard-paste').setDisabled(!this.plugin.operations.copied).onClick(() => { void this.pasteFromClipboard(file instanceof TFolder ? file : file.parent); }));
+    menu.addItem(item => item.setTitle('Delete').setIcon('trash-2').onClick(() => this.deleteFile(file)));
     this.app.workspace.trigger('file-menu', menu, file, VIEW, this.leaf);
     menu.showAtMouseEvent(event);
   }
@@ -354,6 +564,8 @@ export class ProjectsView extends ItemView {
     }).open();
   }
   async onClose() {
+    this.clearDropHighlight();
+    this.plugin.operations.dragging = null;
     this.resize?.disconnect();
     if (this.frame !== undefined) this.viewport.win.cancelAnimationFrame(this.frame);
     this.contentEl.empty();

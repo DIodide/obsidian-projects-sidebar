@@ -47,3 +47,6 @@
 .ps-form-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .ps-form-error { color: var(--text-error); padding-top: 8px; }
 @media (pointer: coarse) { .ps-project > .ps-icon-button { opacity: 1; } }
+.ps-drop-target { background: var(--background-modifier-hover) !important; outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
+.ps-tree-row[draggable=true] { -webkit-user-drag: element; }
+.ps-tree-heading:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }

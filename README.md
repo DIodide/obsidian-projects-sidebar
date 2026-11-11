@@ -10,7 +10,7 @@ Choose a folder, pin your favorites, and settle into a file tree built around yo
 [![Release](https://img.shields.io/github/v/release/DIodide/obsidian-projects-sidebar?style=flat-square&color=8b6cc4)](https://github.com/DIodide/obsidian-projects-sidebar/releases/latest)
 [![Build](https://github.com/DIodide/obsidian-projects-sidebar/actions/workflows/ci.yml/badge.svg)](https://github.com/DIodide/obsidian-projects-sidebar/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-617a6a?style=flat-square)](LICENSE)
-[![Obsidian 1.8+](https://img.shields.io/badge/Obsidian-1.8%2B-7c6f9d?style=flat-square)](manifest.json)
+[![Obsidian 1.8.7+](https://img.shields.io/badge/Obsidian-1.8.7%2B-7c6f9d?style=flat-square)](manifest.json)
 
 [Install](#install) · [How it works](#how-it-works) · [Development](#development) · [Report a bug](https://github.com/DIodide/obsidian-projects-sidebar/issues)
 
@@ -33,7 +33,7 @@ Choose a folder, pin your favorites, and settle into a file tree built around yo
 
 ## Install
 
-Requires **Obsidian 1.8.0 or newer**. Install from GitHub; this plugin is not currently listed in Obsidian's community plugin directory.
+Requires **Obsidian 1.8.7 or newer**. Install from GitHub; this plugin is not currently listed in Obsidian's community plugin directory.
 
 ### With BRAT
 
@@ -45,7 +45,7 @@ https://github.com/DIodide/obsidian-projects-sidebar
 
 ### Manually
 
-1. Download `projects-sidebar-1.0.0.zip` from the [latest release](https://github.com/DIodide/obsidian-projects-sidebar/releases/latest).
+1. Download `projects-sidebar-1.1.0.zip` from the [latest release](https://github.com/DIodide/obsidian-projects-sidebar/releases/latest).
 2. Extract the `projects-sidebar` folder into `<vault>/.obsidian/plugins/`.
 3. Reload Obsidian and enable **Projects Sidebar** under **Settings → Community plugins**.
 
@@ -84,9 +84,20 @@ Remove the nested project from the list and its subtree becomes part of the pare
 
 The command palette also offers **Switch project**, **Add folder as project**, **Show all vault files**, and **Reveal active file in its project**. Automatic opening can be turned off in the plugin's settings.
 
+### Move, copy, and delete
+
+- **Drag a note or folder** onto another folder, a nested-project shortcut, or a project in the list to move it there. Drop on the tree heading or blank tree space to move it to the current project's root. Moves use Obsidian's link-aware file manager.
+- **Ctrl+C / Ctrl+V** (also **Cmd+C / Cmd+V** on macOS) copy and paste the focused tree item. Select a destination folder to paste inside it; select a note to paste beside it. Click blank tree space to target the project root. Copy/paste without changing the selection duplicates the item beside itself, including a folder's descendants.
+- **Ctrl+D** (also **Cmd+D** or **Delete**) deletes the focused tree item using Obsidian's existing confirmation and deletion settings.
+- Right-click a tree item for **Copy**, **Paste**, and **Delete**. Copy/paste is supported between Projects views in the same open vault; clipboard text copied elsewhere replaces the copied file reference for keyboard paste.
+
+Copies use an available name such as `Note 1.md`. Moves never replace an existing item, and a folder cannot be moved or copied inside itself. Dragging a registered project folder also updates its saved path. Copying a project folder copies its contents without registering another project.
+
+Shortcuts apply while the sidebar tree is focused. Clicking a note keeps keyboard focus in the tree; click the editor to resume editing. Editing text in the project filter uses ordinary text shortcuts.
+
 ## Small by design
 
-- Uses Obsidian's existing in-memory file objects; it never reads note contents.
+- Uses Obsidian's existing in-memory file objects; navigation never reads note contents. Explicit copy operations use Obsidian’s native file/folder copy API.
 - Traverses expanded folders only and stops at nested project boundaries.
 - Windows the file-tree DOM to the viewport plus a small buffer. The automated suite checks that a 10,000-file tree mounts fewer than 40 rows with a simulated 400px viewport.
 - Debounces create, delete, and rename events. No polling or refreshes on note edits and metadata changes.
@@ -106,7 +117,7 @@ npm run build
 
 `npm run package` creates the installable ZIP. `npm run screenshots` regenerates the images from fictional data using the actual sidebar source and CSS.
 
-Tests cover project ownership, path boundaries, persisted state, renames, filtering, keyboard navigation, file opening, expansion restoration, empty folders, and large-tree windowing. Integration tests use jsdom and a small Obsidian API mock. The documentation renderer also checks switching and filtering in Chromium. **Live Obsidian and mobile testing remain unverified for this initial release.**
+Tests cover project ownership, path boundaries, persisted state, renames, filtering, keyboard navigation, file opening, expansion restoration, empty folders, large-tree windowing, clipboard handling, drag-and-drop moves, collision protection, and deletion cancellation. Integration tests use jsdom and a small Obsidian API mock. The documentation renderer also checks switching, filtering, clipboard shortcuts, dragging, and deletion in Chromium with a mock vault. **Live Obsidian and mobile testing remain unverified for these interactions.**
 
 See [Contributing](CONTRIBUTING.md) for setup and release instructions, and the [Changelog](CHANGELOG.md) for version history.
 

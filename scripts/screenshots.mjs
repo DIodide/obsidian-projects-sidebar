@@ -17,7 +17,7 @@ if (!executablePath && process.platform === 'darwin') {
 }
 const browser = await chromium.launch({ executablePath, headless: true });
 try {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1050 }, deviceScaleFactor: 1.5 });
+  const page = await browser.newPage({ permissions: ['clipboard-read', 'clipboard-write'], viewport: { width: 1440, height: 1050 }, deviceScaleFactor: 1.5 });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(pathToFileURL(resolve('.demo-build/demo.html')).href);
@@ -43,6 +43,27 @@ try {
   assert.equal(await page.locator('.ps-tree-row').count(), 8);
   await page.getByRole('searchbox', { name: 'Filter projects' }).fill('garden');
   assert.equal(await page.locator('.ps-project-select').count(), 2);
+  await page.getByRole('searchbox', { name: 'Filter projects' }).fill('');
+  await page.locator('.ps-tree-row[data-path="Studio/Brand refresh/Project brief.md"]').click();
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+  await page.keyboard.press(`${modifier}+c`);
+  await page.keyboard.press(`${modifier}+v`);
+  await page.waitForFunction(() => window.demo.nodes.has('Studio/Brand refresh/Project brief 1.md'));
+  await page.waitForFunction(() => !window.demo.plugin.operations.busy);
+  const copied = page.locator('.ps-tree-row[data-path="Studio/Brand refresh/Project brief 1.md"]');
+  await copied.dragTo(page.locator('.ps-tree-row[data-path="Studio/Brand refresh/Research"]'));
+  await page.waitForFunction(() => window.demo.nodes.has('Studio/Brand refresh/Research/Project brief 1.md'));
+  await page.waitForFunction(() => !window.demo.plugin.operations.busy);
+  await page.locator('.ps-tree-row[data-path="Studio/Brand refresh/Research/Project brief 1.md"]').click();
+  await page.keyboard.press('Control+d');
+  await page.waitForFunction(() => !window.demo.nodes.has('Studio/Brand refresh/Research/Project brief 1.md'));
+  assert.equal(await page.evaluate(() => window.demo.nodes.has('Studio/Brand refresh/Project brief.md')), true);
+  if (process.platform === 'darwin') {
+    await page.locator('.ps-tree-row[data-path="Studio/Brand refresh/Project brief.md"]').click();
+    await page.keyboard.press('Control+c');
+    await page.keyboard.press('Control+v');
+    await page.waitForFunction(() => window.demo.nodes.has('Studio/Brand refresh/Project brief 1.md'));
+  }
   assert.deepEqual(errors, []);
-  console.log('Created two screenshots from fictional data; project switching, nested boundaries, expansion restoration, and filtering verified.');
+  console.log('Created two screenshots from fictional data; project switching, nested boundaries, expansion restoration, filtering, native clipboard shortcuts, drag/drop, and deletion verified.');
 } finally { await browser.close(); }
